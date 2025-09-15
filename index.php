@@ -1,32 +1,85 @@
 <?php
 require_once 'config.php';
 
-// Get first unprocessed video
-$stmt = $db->prepare('SELECT * FROM videos WHERE is_processed = 0 LIMIT 1');
-$result = $stmt->execute();
-$currentVideo = $result ? $result->fetchArray(SQLITE3_ASSOC) : null;
+// Get navigation parameters
+$videoId = isset($_GET['video']) ? intval($_GET['video']) : 0;
 
-// Generate random thumbnail on every page load
+// Get specific video or first unprocessed
+if ($videoId > 0) {
+    $stmt = $db->prepare('SELECT * FROM videos WHERE id = ?');
+    $stmt->bindValue(1, $videoId, SQLITE3_INTEGER);
+    $result = $stmt->execute();
+    $currentVideo = $result ? $result->fetchArray(SQLITE3_ASSOC) : null;
+} else {
+    $stmt = $db->prepare('SELECT * FROM videos WHERE is_processed = 0 LIMIT 1');
+    $result = $stmt->execute();
+    $currentVideo = $result ? $result->fetchArray(SQLITE3_ASSOC) : null;
+    
+    // If no unprocessed videos, get first video
+    if (!$currentVideo) {
+        $stmt = $db->prepare('SELECT * FROM videos ORDER BY id ASC LIMIT 1');
+        $result = $stmt->execute();
+        $currentVideo = $result ? $result->fetchArray(SQLITE3_ASSOC) : null;
+    }
+}
+
+// Get previous and next videos for navigation
+// Get previous and next videos for navigation
+$prevVideo = null;
+$nextVideo = null;
+
+if ($currentVideo) {
+    // Get ANY previous video (processed or unprocessed)
+    $stmt = $db->prepare('SELECT * FROM videos WHERE id < ? ORDER BY id DESC LIMIT 1');
+    $stmt->bindValue(1, $currentVideo['id'], SQLITE3_INTEGER);
+    $result = $stmt->execute();
+    $prevVideo = $result ? $result->fetchArray(SQLITE3_ASSOC) : null;
+    
+    // Get next unprocessed video first
+    $stmt = $db->prepare('SELECT * FROM videos WHERE id > ? AND is_processed = 0 ORDER BY id ASC LIMIT 1');
+    $stmt->bindValue(1, $currentVideo['id'], SQLITE3_INTEGER);
+    $result = $stmt->execute();
+    $nextVideo = $result ? $result->fetchArray(SQLITE3_ASSOC) : null;
+    
+    // If no next unprocessed, get next processed video
+    if (!$nextVideo) {
+        $stmt = $db->prepare('SELECT * FROM videos WHERE id > ? ORDER BY id ASC LIMIT 1');
+        $stmt->bindValue(1, $currentVideo['id'], SQLITE3_INTEGER);
+        $result = $stmt->execute();
+        $nextVideo = $result ? $result->fetchArray(SQLITE3_ASSOC) : null;
+    }
+}
+
+// Generate thumbnail
 $thumbnailUrl = '';
 if ($currentVideo) {
     $videoPath = $currentVideo['file_path'];
     
-    // Get video duration using ffprobe
-    $durationCmd = "ffprobe -v quiet -show_entries format=duration -of csv=p=0 " . escapeshellarg($videoPath) . " 2>/dev/null";
-    $duration = floatval(shell_exec($durationCmd));
-    
-    if ($duration > 0) {
-        // Pick random time (avoid first and last 5%)
-        $safeStart = $duration * 0.05;
-        $safeEnd = $duration * 0.95;
-        $randomTime = $safeStart + (mt_rand() / mt_getrandmax()) * ($safeEnd - $safeStart);
+    if (file_exists($videoPath)) {
+        $durationCmd = "ffprobe -v quiet -show_entries format=duration -of csv=p=0 " . escapeshellarg($videoPath) . " 2>/dev/null";
+        $duration = floatval(shell_exec($durationCmd));
         
-        // Create temporary thumbnail URL with timestamp to prevent caching
-        $thumbnailUrl = "thumbnail.php?video=" . urlencode($videoPath) . "&time=" . urlencode(sprintf("%.2f", $randomTime)) . "&t=" . time();
+        if ($duration > 0) {
+            $safeStart = $duration * 0.05;
+            $safeEnd = $duration * 0.95;
+            $randomTime = $safeStart + (mt_rand() / mt_getrandmax()) * ($safeEnd - $safeStart);
+            $thumbnailUrl = "thumbnail.php?video=" . urlencode($videoPath) . "&time=" . urlencode(sprintf("%.2f", $randomTime)) . "&t=" . time();
+        }
     }
 }
 
-// Get all categories and tags for autocomplete
+// Get video metadata if video exists
+$videoMetadata = [];
+if ($currentVideo) {
+    $videoMetadata = getVideoMetadata($currentVideo['file_path']);
+    
+    // Auto-detect orientation if not set
+    if (empty($currentVideo['orientation']) && $videoMetadata['orientation'] !== 'unknown') {
+        $currentVideo['orientation'] = $videoMetadata['orientation'];
+    }
+}
+
+// Get all categories and tags
 $categories = [];
 $tags = [];
 
@@ -40,10 +93,43 @@ while ($row = $tagResult->fetchArray(SQLITE3_ASSOC)) {
     $tags[] = htmlspecialchars($row['tag'], ENT_QUOTES, 'UTF-8');
 }
 
-// Get progress stats
+// Get existing tags/categories for current video
+$videoCategories = [];
+$videoTags = [];
+
+if ($currentVideo) {
+    // Get existing categories for this video
+    $stmt = $db->prepare("
+        SELECT c.category 
+        FROM categories c 
+        JOIN video_categories vc ON c.id = vc.category_id 
+        WHERE vc.video_id = ?
+    ");
+    $stmt->bindValue(1, $currentVideo['id'], SQLITE3_INTEGER);
+    $result = $stmt->execute();
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $videoCategories[] = htmlspecialchars($row['category'], ENT_QUOTES, 'UTF-8');
+    }
+    
+    // Get existing tags for this video
+    $stmt = $db->prepare("
+        SELECT t.tag 
+        FROM tags t 
+        JOIN video_tags vt ON t.id = vt.tag_id 
+        WHERE vt.video_id = ?
+    ");
+    $stmt->bindValue(1, $currentVideo['id'], SQLITE3_INTEGER);
+    $result = $stmt->execute();
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $videoTags[] = htmlspecialchars($row['tag'], ENT_QUOTES, 'UTF-8');
+    }
+}
+
+// Progress stats
 $totalVideos = $db->querySingle('SELECT COUNT(*) FROM videos');
 $processedVideos = $db->querySingle('SELECT COUNT(*) FROM videos WHERE is_processed = 1');
 $remainingVideos = $totalVideos - $processedVideos;
+$progressPercent = $totalVideos > 0 ? ($processedVideos / $totalVideos * 100) : 0;
 ?>
 
 <!DOCTYPE html>
@@ -108,18 +194,23 @@ $remainingVideos = $totalVideos - $processedVideos;
             font-size: 0.9rem;
             color: #6c757d;
         }
+        #delete-btn:hover {
+            background-color: #dc3545 !important;
+            color: white !important;
+            border-color: #dc3545 !important;
+        }
     </style>
 </head>
 <body data-bs-theme="dark">
     <div class="container-fluid border-bottom border-2 p-1 m-0">
         <ul class="nav nav-pills justify-content-center">
             <li class="nav-item">
-                <a class="nav-link active" href="#">
+                <a class="nav-link <?php echo basename($_SERVER['PHP_SELF']) === 'index.php' ? 'active' : ''; ?>" href="index.php">
                     <i class="fa-solid fa-video"></i> Tagging
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" href="#">
+                <a class="nav-link <?php echo basename($_SERVER['PHP_SELF']) === 'database.php' ? 'active' : ''; ?>" href="database.php">
                     <i class="fa-solid fa-database"></i> Database
                 </a>
             </li>
@@ -128,33 +219,107 @@ $remainingVideos = $totalVideos - $processedVideos;
 
     <main class="container mt-3">
         <?php if ($currentVideo): ?>
-            <div class="row">
                 <!-- Progress Bar -->
-                <div class="col-12 mb-3">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <h5 class="mb-0">Video Tagging</h5>
-                            <small class="progress-text">
-                                <?php echo "$processedVideos of $totalVideos videos processed ($remainingVideos remaining)"; ?>
-                            </small>
-                        </div>
-                        <div class="btn-group">
-                            <button class="btn btn-outline-secondary btn-sm" id="skip-btn">
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <div>
+                                <h5 class="mb-0">Video Tagging</h5>
+                                <small class="text-muted">
+                                    <?php echo "$processedVideos of $totalVideos videos processed"; ?>
+                                    <?php if ($remainingVideos > 0): ?>
+                                        (<?php echo $remainingVideos; ?> remaining)
+                                    <?php endif; ?>
+                                </small>
+                            </div>
+                            <div class="btn-group">
+                            <?php if ($prevVideo): ?>
+                                <a href="?video=<?php echo $prevVideo['id']; ?>" class="btn btn-outline-secondary btn-sm">
+                                    <i class="fa-solid fa-arrow-left"></i> Previous
+                                </a>
+                            <?php endif; ?>
+                            <button class="btn btn-outline-warning btn-sm" id="skip-btn">
                                 <i class="fa-solid fa-forward"></i> Skip
                             </button>
+                            <?php if ($currentVideo): ?>
+                                <button class="btn btn-outline-danger btn-sm" id="delete-btn">
+                                    <i class="fa-solid fa-trash"></i> Delete
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($nextVideo): ?>
+                                <a href="?video=<?php echo $nextVideo['id']; ?>" class="btn btn-outline-secondary btn-sm">
+                                    Next <i class="fa-solid fa-arrow-right"></i>
+                                </a>
+                            <?php endif; ?>
                         </div>
-                    </div>
-                    <div class="progress mt-2">
-                        <div class="progress-bar" role="progressbar" 
-                             style="width: <?php echo $totalVideos > 0 ? ($processedVideos / $totalVideos * 100) : 0; ?>%">
+                        </div>
+                        <div class="progress" style="height: 8px;">
+                            <div class="progress-bar" role="progressbar" 
+                                style="width: <?php echo $progressPercent; ?>%">
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
+
+                <!-- Enhanced Video Info -->
+                <?php if ($currentVideo): ?>
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <h6 class="mb-1">
+                                            <i class="fa-solid fa-file-video"></i>
+                                            <?php echo htmlspecialchars($currentVideo['file_name'], ENT_QUOTES, 'UTF-8'); ?>
+                                        </h6>
+                                        <div class="row mt-2">
+                                            <div class="col-md-6">
+                                                <small class="text-muted">
+                                                    <div><i class="fa-solid fa-hashtag"></i> ID: <?php echo $currentVideo['id']; ?></div>
+                                                    <div><i class="fa-solid fa-weight-scale"></i> Size: <?php echo formatFileSize($videoMetadata['size'] ?? 0); ?></div>
+                                                    <div><i class="fa-solid fa-clock"></i> Duration: <?php echo formatDuration($videoMetadata['duration'] ?? 0); ?></div>
+                                                </small>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <small class="text-muted">
+                                                    <?php if ($videoMetadata['width'] > 0 && $videoMetadata['height'] > 0): ?>
+                                                        <div><i class="fa-solid fa-expand"></i> Resolution: <?php echo $videoMetadata['width']; ?>×<?php echo $videoMetadata['height']; ?></div>
+                                                        <div><i class="fa-solid fa-ratio"></i> Aspect Ratio: <?php echo getVideoAspectRatio($videoMetadata['width'], $videoMetadata['height']); ?></div>
+                                                    <?php endif; ?>
+                                                    <?php if (!empty($currentVideo['orientation']) && $currentVideo['orientation'] !== 'unknown'): ?>
+                                                        <div><i class="fa-solid fa-rotate"></i> Orientation: <?php echo ucfirst($currentVideo['orientation']); ?></div>
+                                                    <?php endif; ?>
+                                                </small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <?php if ($currentVideo['is_processed']): ?>
+                                            <span class="badge bg-success">Processed</span>
+                                        <?php else: ?>
+                                            <span class="badge bg-warning">Unprocessed</span>
+                                        <?php endif; ?>
+                                        <?php if ($currentVideo['flagged']): ?>
+                                            <span class="badge bg-danger ms-1">Flagged</span>
+                                        <?php endif; ?>
+                                        <?php if ($currentVideo['duration']): ?>
+                                            <span class="badge bg-secondary ms-1"><?php echo ucfirst($currentVideo['duration']); ?></span>
+                                        <?php endif; ?>
+                                        <?php if ($currentVideo['quality']): ?>
+                                            <span class="badge bg-info ms-1"><?php echo ucfirst($currentVideo['quality']); ?></span>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
 
             <div class="row">
                 <!-- Video Player -->
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <div class="card">
                         <div class="card-header">
                             <h6 class="mb-0">
@@ -174,7 +339,7 @@ $remainingVideos = $totalVideos - $processedVideos;
                 </div>
 
                 <!-- Tagging Form -->
-                <div class="col-md-8">
+                <div class="col-md-9">
                     <div class="card">
                         <div class="card-header d-flex justify-content-between align-items-center">
                             <span>Video Details</span>
@@ -278,69 +443,113 @@ $remainingVideos = $totalVideos - $processedVideos;
         });
         <?php endif; ?>
 
-        // Initialize Tagify
-        const categoryInput = document.querySelector('#category-input');
-        const tagsInput = document.querySelector('#tags-input');
-        
-        const categoryTagify = new Tagify(categoryInput, {
-            whitelist: <?php echo json_encode($categories); ?>,
-            dropdown: {
-                enabled: 0,
-                maxItems: 10,
-                closeOnSelect: false
-            }
-        });
-        
-        const tagsTagify = new Tagify(tagsInput, {
-            whitelist: <?php echo json_encode($tags); ?>,
-            dropdown: {
-                enabled: 0,
-                maxItems: 10,
-                closeOnSelect: false
-            }
-        });
+        // Initialize Tagify with existing values
+    const categoryInput = document.querySelector('#category-input');
+    const tagsInput = document.querySelector('#tags-input');
+    
+    const categoryTagify = new Tagify(categoryInput, {
+        whitelist: <?php echo json_encode($categories); ?>,
+        dropdown: {
+            enabled: 0,
+            maxItems: 10,
+            closeOnSelect: false
+        }
+    });
+    
+    const tagsTagify = new Tagify(tagsInput, {
+        whitelist: <?php echo json_encode($tags); ?>,
+        dropdown: {
+            enabled: 0,
+            maxItems: 10,
+            closeOnSelect: false
+        }
+    });
+    
+    // Set existing values if editing a processed video
+    <?php if (!empty($videoCategories)): ?>
+        categoryTagify.addTags(<?php echo json_encode($videoCategories); ?>);
+    <?php endif; ?>
+    
+    <?php if (!empty($videoTags)): ?>
+        tagsTagify.addTags(<?php echo json_encode($videoTags); ?>);
+    <?php endif; ?>
+    
+    // Set existing form values
+    <?php if ($currentVideo): ?>
+        $('#video-orientation').val('<?php echo $currentVideo['orientation'] ?? ''; ?>');
+        $('#video-duration').val('<?php echo $currentVideo['duration'] ?? ''; ?>');
+        $('#video-quality').val('<?php echo $currentVideo['quality'] ?? ''; ?>');
+        $('#flagged-switch').prop('checked', <?php echo ($currentVideo['flagged'] ?? 0) ? 'true' : 'false'; ?>);
+    <?php endif; ?>
 
-        // Save functionality
-        $('#save-btn').click(function() {
-            const videoId = <?php echo $currentVideo ? $currentVideo['id'] : 'null'; ?>;
-            if (!videoId) return;
-            
-            const data = {
-                video_id: videoId,
-                orientation: $('#video-orientation').val(),
-                duration: $('#video-duration').val(),
-                quality: $('#video-quality').val(),
-                categories: categoryTagify.value.map(tag => tag.value),
-                tags: tagsTagify.value.map(tag => tag.value),
-                flagged: $('#flagged-switch').is(':checked') ? 1 : 0
-            };
-            
-            $.post('ajax/save_video.php', data, function(response) {
-                if (response.success) {
-                    window.location.href = 'index.php';
-                } else {
-                    alert('Error saving video: ' + response.error);
-                }
-            }).fail(function() {
-                alert('Failed to save video');
-            });
+    // Save functionality
+    $('#save-btn').click(function() {
+        const videoId = <?php echo $currentVideo ? $currentVideo['id'] : 'null'; ?>;
+        if (!videoId) return;
+        
+        const data = {
+            video_id: videoId,
+            orientation: $('#video-orientation').val(),
+            duration: $('#video-duration').val(),
+            quality: $('#video-quality').val(),
+            categories: categoryTagify.value.map(tag => {
+                return typeof tag === 'object' ? tag.value : tag;
+            }),
+            tags: tagsTagify.value.map(tag => {
+                return typeof tag === 'object' ? tag.value : tag;
+            }),
+            flagged: $('#flagged-switch').is(':checked') ? 1 : 0
+        };
+        
+        $.post('ajax/save_video.php', data, function(response) {
+            if (response.success) {
+                window.location.href = 'index.php';
+            } else {
+                alert('Error saving video: ' + response.error);
+            }
+        }).fail(function(xhr, status, error) {
+            alert('Failed to save video: ' + error);
         });
+    });
 
-        // Skip functionality
-        $('#skip-btn').click(function() {
-            const videoId = <?php echo $currentVideo ? $currentVideo['id'] : 'null'; ?>;
-            if (!videoId) return;
-            
-            $.post('ajax/skip_video.php', {video_id: videoId}, function(response) {
-                if (response.success) {
-                    window.location.href = 'index.php';
-                } else {
-                    alert('Error skipping video: ' + response.error);
-                }
-            }).fail(function() {
-                alert('Failed to skip video');
-            });
+    // Skip functionality
+    $('#skip-btn').click(function() {
+        const videoId = <?php echo $currentVideo ? $currentVideo['id'] : 'null'; ?>;
+        if (!videoId) return;
+        
+        $.post('ajax/skip_video.php', {video_id: videoId}, function(response) {
+            if (response.success) {
+                window.location.href = 'index.php';
+            } else {
+                alert('Error skipping video: ' + response.error);
+            }
+        }).fail(function(xhr, status, error) {
+            alert('Failed to skip video: ' + error);
         });
+    });
+
+    // Delete functionality
+    $('#delete-btn').click(function() {
+        const videoId = <?php echo $currentVideo ? $currentVideo['id'] : 'null'; ?>;
+        if (!videoId) return;
+        
+        // Confirm deletion
+        if (!confirm('Are you sure you want to delete this video?\nThis will remove both the database entry and the actual file!')) {
+            return;
+        }
+        
+        $.post('ajax/delete_video.php', {video_id: videoId}, function(response) {
+            if (response.success) {
+                alert('Video deleted successfully!');
+                // Go to next video or reload
+                window.location.href = 'index.php';
+            } else {
+                alert('Error deleting video: ' + response.error);
+            }
+        }).fail(function(xhr, status, error) {
+            alert('Failed to delete video: ' + error);
+        });
+    });
     </script>
 </body>
 </html>

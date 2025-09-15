@@ -49,4 +49,5 @@ try {
 } catch (Exception $e) {
     die("Database setup failed: " . $e->getMessage());
 }
+require_once __DIR__ . '/includes/helpers.php';
 ?>

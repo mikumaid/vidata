@@ -347,47 +347,6 @@ $progressPercent = $totalVideos > 0 ? ($processedVideos / $totalVideos * 100) : 
           </div>
         </div>
         <?php endif; ?>
-        <!-- Add this after the video info card -->
-        <?php if ($currentVideo): ?>
-        <div class="row mb-3">
-          <div class="col-12">
-            <div class="card">
-              <div class="card-body">
-                <h6 class="card-title mb-3">
-                  <i class="fa-solid fa-star"></i> Rate This Video
-                </h6>
-                <div class="d-flex align-items-center">
-                  <div class="me-3">
-                    <div class="rating-stars">
-                      <?php for ($i = 1; $i <= 5; $i++): ?>
-                        <button type="button" 
-                            class="btn btn-outline-warning rating-star <?php echo ($currentVideo['rating'] >= $i) ? 'active' : ''; ?>" 
-                            data-rating="<?php echo $i; ?>">
-                          <i class="fa-solid fa-star"></i>
-                        </button>
-                      <?php endfor; ?>
-                    </div>
-                  </div>
-                  <div>
-                    <span class="rating-text">
-                      <?php 
-                      $ratingText = ['Unrated', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
-                      echo $currentVideo['rating'] > 0 ? $ratingText[$currentVideo['rating']] : 'Not rated';
-                      ?>
-                    </span>
-                    <?php if ($currentVideo['rating'] > 0): ?>
-                      <button class="btn btn-sm btn-outline-danger ms-2" id="clear-rating">
-                        <i class="fa-solid fa-xmark"></i> Clear
-                      </button>
-                    <?php endif; ?>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <?php endif; ?>
-
       <div class="row">
         <!-- Video Player -->
         <div class="col-md-3">
@@ -480,9 +439,30 @@ $progressPercent = $totalVideos > 0 ? ($processedVideos / $totalVideos * 100) : 
             
             <div class="card-footer">
               <div class="d-flex justify-content-between">
-                <button class="btn btn-secondary" id="prev-btn" disabled>
-                  <i class="fa-solid fa-arrow-left"></i> Previous
-                </button>
+                <?php if ($currentVideo): ?>
+                <div class="d-flex align-items-center gap-3">
+                  <div class="rating-stars">
+                    <?php for ($i = 1; $i <= 5; $i++): ?>
+                      <button type="button" 
+                          class="btn btn-outline-warning rating-star <?php echo ($currentVideo['rating'] >= $i) ? 'active' : ''; ?>" 
+                          data-rating="<?php echo $i; ?>">
+                        <i class="fa-solid fa-star"></i>
+                      </button>
+                    <?php endfor; ?>
+                  </div>
+                    <span class="rating-text">
+                      <?php 
+                      $ratingText = ['Unrated', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
+                      echo $currentVideo['rating'] > 0 ? $ratingText[$currentVideo['rating']] : 'Not rated';
+                      ?>
+                    </span>
+                    <?php if ($currentVideo['rating'] > 0): ?>
+                      <button class="btn btn-sm btn-outline-danger ms-2" id="clear-rating">
+                        <i class="fa-solid fa-xmark"></i> Clear
+                      </button>
+                    <?php endif; ?>
+                </div>
+                <?php endif; ?>
                 <div>
                   <button class="btn btn-success" id="save-btn">
                     <i class="fa-solid fa-save"></i> Save & Next

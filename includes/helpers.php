@@ -33,15 +33,14 @@ function getVideoMetadata($videoPath) {
             // Get video stream info
             if (isset($data['streams']) && is_array($data['streams'])) {
                 foreach ($data['streams'] as $stream) {
-                    if (isset($stream['codec_type']) && $stream['codec_type'] === 'video') {
-                        if (isset($stream['width'])) {
-                            $metadata['width'] = intval($stream['width']);
-                        }
-                        if (isset($stream['height'])) {
-                            $metadata['height'] = intval($stream['height']);
-                        }
-                        break;
+                    if (isset($stream['width'])) {
+                        $metadata['width'] = intval($stream['width']);
+                        error_log(print_r($metadata, true));
                     }
+                    if (isset($stream['height'])) {
+                        $metadata['height'] = intval($stream['height']);
+                    }
+                    break;
                 }
             }
         }

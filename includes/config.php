@@ -15,7 +15,8 @@ try {
             quality TEXT,
             is_processed INTEGER DEFAULT 0,
             flagged INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            rating INTEGER DEFAULT 0
         );
         
         CREATE TABLE IF NOT EXISTS categories (
